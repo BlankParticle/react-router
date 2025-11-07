@@ -337,6 +337,24 @@ export interface RouterProviderProps {
    */
   flushSync?: (fn: () => unknown) => undefined;
   /**
+   * Control whether router state updates are internally wrapped in
+   * [`React.startTransition`](https://react.dev/reference/react/startTransition).
+   * When enabled, intermediate updates will be sent through
+   * [`useOptimistic`](https://react.dev/reference/react/useOptimistic) in order
+   * to surface to the UI.
+   *
+   * This flag has three potential behaviors:
+   * - `undefined` - All state updates are wrapped in `React.startTransition`
+   *   - This can lead to buggy behaviors if you are wrapping your own
+   *     navigations/fetchers in `React.startTransition`
+   * - `true` - Wrap router state changes in `React.startTransition` and
+   *   also leverage `useOptimistic` to surface mid-navigation router state
+   *   changes to the UI
+   * - `false` - Do not use `startTransition` or `useOptimistic` on router
+   *   state changes
+   */
+  unstable_transitions?: boolean;
+  /**
    * An error handler function that will be called for any loader/action/render
    * errors that are encountered in your application.  This is useful for
    * logging or reporting errors instead of the `ErrorBoundary` because it's not
@@ -522,14 +540,18 @@ export function UNSTABLE_TransitionEnabledRouterProvider({
  * @param {RouterProviderProps.flushSync} props.flushSync n/a
  * @param {RouterProviderProps.unstable_onError} props.unstable_onError n/a
  * @param {RouterProviderProps.router} props.router n/a
+ * @param {RouterProviderProps.unstable_transitions} props.unstable_transitions n/a
  * @returns React element for the rendered router
  */
 export function RouterProvider({
   router,
   flushSync: reactDomFlushSyncImpl,
   unstable_onError,
+  unstable_transitions,
 }: RouterProviderProps): React.ReactElement {
-  let [state, setStateImpl] = React.useState(router.state);
+  let [_state, setStateImpl] = React.useState(router.state);
+  // @ts-expect-error - Needs React 19 types
+  let [state, setOptimisticState] = React.useOptimistic(_state);
   let [pendingState, setPendingState] = React.useState<RouterState>();
   let [vtContext, setVtContext] = React.useState<ViewTransitionContextObject>({
     isTransitioning: false,
@@ -544,6 +566,9 @@ export function RouterProvider({
   let fetcherData = React.useRef<Map<string, any>>(new Map());
   let logErrorsAndSetState = React.useCallback(
     (newState: RouterState) => {
+      if (unstable_transitions === true) {
+        setOptimisticState(newState);
+      }
       setStateImpl((prevState) => {
         // Send loader/action errors through handleError
         if (newState.errors && unstable_onError) {
@@ -559,7 +584,7 @@ export function RouterProvider({
         return newState;
       });
     },
-    [unstable_onError],
+    [unstable_transitions, setOptimisticState, unstable_onError],
   );
 
   let setState = React.useCallback<RouterSubscriber>(
@@ -601,6 +626,8 @@ export function RouterProvider({
       if (!viewTransitionOpts || !isViewTransitionAvailable) {
         if (reactDomFlushSyncImpl && flushSync) {
           reactDomFlushSyncImpl(() => logErrorsAndSetState(newState));
+        } else if (unstable_transitions === false) {
+          logErrorsAndSetState(newState);
         } else {
           React.startTransition(() => logErrorsAndSetState(newState));
         }
@@ -613,7 +640,7 @@ export function RouterProvider({
         reactDomFlushSyncImpl(() => {
           // Cancel any pending transitions
           if (transition) {
-            renderDfd && renderDfd.resolve();
+            renderDfd?.resolve();
             transition.skipTransition();
           }
           setVtContext({
@@ -647,7 +674,7 @@ export function RouterProvider({
       if (transition) {
         // Interrupting an in-progress transition, cancel and let everything flush
         // out, and then kick off a new transition from the interruption state
-        renderDfd && renderDfd.resolve();
+        renderDfd?.resolve();
         transition.skipTransition();
         setInterruption({
           state: newState,
@@ -666,11 +693,12 @@ export function RouterProvider({
       }
     },
     [
-      router.window,
       reactDomFlushSyncImpl,
+      router.window,
       transition,
-      renderDfd,
+      unstable_transitions,
       logErrorsAndSetState,
+      renderDfd,
     ],
   );
 
@@ -694,7 +722,11 @@ export function RouterProvider({
       let newState = pendingState;
       let renderPromise = renderDfd.promise;
       let transition = router.window.document.startViewTransition(async () => {
-        React.startTransition(() => logErrorsAndSetState(newState));
+        if (unstable_transitions === false) {
+          logErrorsAndSetState(newState);
+        } else {
+          React.startTransition(() => logErrorsAndSetState(newState));
+        }
         await renderPromise;
       });
       transition.finished.finally(() => {
@@ -705,7 +737,13 @@ export function RouterProvider({
       });
       setTransition(transition);
     }
-  }, [pendingState, renderDfd, router.window, logErrorsAndSetState]);
+  }, [
+    pendingState,
+    renderDfd,
+    router.window,
+    logErrorsAndSetState,
+    unstable_transitions,
+  ]);
 
   // When the new location finally renders and is committed to the DOM, this
   // effect will run to resolve the transition
@@ -837,6 +875,24 @@ export interface MemoryRouterProps {
    * Index of `initialEntries` the application should initialize to
    */
   initialIndex?: number;
+  /**
+   * Control whether router state updates are internally wrapped in
+   * [`React.startTransition`](https://react.dev/reference/react/startTransition).
+   * When enabled, intermediate updates will be sent through
+   * [`useOptimistic`](https://react.dev/reference/react/useOptimistic) in order
+   * to surface to the UI.
+   *
+   * This flag has three potential behaviors:
+   * - `undefined` - All state updates are wrapped in `React.startTransition`
+   *   - This can lead to buggy behaviors if you are wrapping your own
+   *     navigations/fetchers in `React.startTransition`
+   * - `true` - Wrap router state changes in `React.startTransition` and
+   *   also leverage `useOptimistic` to surface mid-navigation router state
+   *   changes to the UI
+   * - `false` - Do not use `startTransition` or `useOptimistic` on router
+   *   state changes
+   */
+  unstable_transitions?: boolean;
 }
 
 /**
@@ -850,6 +906,7 @@ export interface MemoryRouterProps {
  * @param {MemoryRouterProps.children} props.children n/a
  * @param {MemoryRouterProps.initialEntries} props.initialEntries n/a
  * @param {MemoryRouterProps.initialIndex} props.initialIndex n/a
+ * @param {MemoryRouterProps.unstable_transitions} props.unstable_transitions n/a
  * @returns A declarative in-memory {@link Router | `<Router>`} for client-side
  * routing.
  */
@@ -858,6 +915,7 @@ export function MemoryRouter({
   children,
   initialEntries,
   initialIndex,
+  unstable_transitions,
 }: MemoryRouterProps): React.ReactElement {
   let historyRef = React.useRef<MemoryHistory>();
   if (historyRef.current == null) {
@@ -869,15 +927,26 @@ export function MemoryRouter({
   }
 
   let history = historyRef.current;
-  let [state, setStateImpl] = React.useState({
+  let [_state, setStateImpl] = React.useState({
     action: history.action,
     location: history.location,
   });
+  // @ts-expect-error - Needs React 19 types
+  let [state, setOptimisticState] = React.useOptimistic(_state);
   let setState = React.useCallback(
     (newState: { action: NavigationType; location: Location }) => {
-      React.startTransition(() => setStateImpl(newState));
+      if (unstable_transitions === false) {
+        setStateImpl(newState);
+      } else if (unstable_transitions === true) {
+        React.startTransition(() => {
+          setOptimisticState(newState);
+          setStateImpl(newState);
+        });
+      } else {
+        React.startTransition(() => setStateImpl(newState));
+      }
     },
-    [setStateImpl],
+    [setOptimisticState, unstable_transitions],
   );
 
   React.useLayoutEffect(() => history.listen(setState), [history, setState]);
